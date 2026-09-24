@@ -1,224 +1,189 @@
-﻿# -*- coding: utf-8 -*-
-"""Step 1: build the Shanghai/Shenzhen A-share plus BSE market panel.
+# -*- coding: utf-8 -*-
+"""Step 1：构建沪深 A 股 + 北交所的行情面板。
 
-ST/PT and new-listing constraints are not applied. Shanghai B shares encoded
-as 900xxx.BJ and Shenzhen B shares encoded as 200/201xxx.SZ are excluded.
-Same-day trading status and listing-date availability are retained for audit.
+不施加 ST/PT 与次新股约束；剔除沪市 B 股（900xxx.BJ）与深市 B 股
+（200/201xxx.SZ）。当日交易状态与上市日期可用性保留在面板中供审计。
+
+北交所 2025 年换代码，同一只证券在切换前后必须共享一个身份，而财报又要按
+旧代码连接，因此这里同时派生两个字段：`security_id`（旧码归到新码）与
+`financial_code6`（新码归到旧码）。
+
+行情表要扫两遍：首现日与北交所切换日行情都必须全表扫完才知道，第二遍才能
+用它们打标记。
 """
 from pathlib import Path
+import re
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from bse_code_mapping import NEW_FIRST_DATE, OLD_LAST_DATE, derive_bse_code_mapping
 
-
 ROOT = Path(__file__).resolve().parents[1]
-BASE = Path(r"D:\实习生学习项目\基础数据")
 OUT_DIR = ROOT / "中间结果"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-source = BASE / "chn_equ_mkt_quotation.parquet"
-out_path = OUT_DIR / "_mkt_clean.parquet"
-columns = ["date", "stock_code", "me_total", "suspended", "status"]
-expected_shanghai_b_share_count = 50
-expected_shenzhen_b_share_count = 39
+SOURCE = Path(r"D:\实习生学习项目\基础数据") / "chn_equ_mkt_quotation.parquet"
+OUT_PATH = OUT_DIR / "_mkt_clean.parquet"
+BATCH = 25_000
+
+# 第一遍只取首现日与北交所映射需要的最小列
+MAPPING_COLUMNS = [
+    "date", "stock_code", "close", "pre_close",
+    "close_adj", "pre_close_adj", "share_total",
+]
+SCAN_COLUMNS = ["date", "stock_code", "me_total", "suspended", "status"]
+OUT_COLUMNS = [
+    "date", "code6", "market_code", "security_id", "financial_code6",
+    "bse_code_mapped", "exchange", "market_scope", "me_total", "status",
+    "suspended", "suspended_unknown", "is_cixin", "listing_date_known",
+    "first_seen_date",
+]
+
+# B 股识别规则与预期数量：数量不符即中断，避免口径悄悄漂移
+B_SHARE_RULES = [("上海 B 股", ("900",), ".BJ"), ("深圳 B 股", ("200", "201"), ".SZ")]
+EXPECTED_B_SHARE_COUNTS = {"上海 B 股": 50, "深圳 B 股": 39}
+MARKET_SCOPES = {"SH": "沪市 A 股", "SZ": "深市 A 股", "BJ": "北交所"}
+
+# 时点字段可用性审计：字段是否可用、是否被用作筛选条件
+FIELD_AUDIT = [
+    ("ST/PT", "未提供历史字段", "不可用", 0, "不使用当前名称反推历史状态"),
+    ("上市日期", "行情首次出现日 first_seen_date", "部分可用", 0, "仅记录代理日期，不作为筛选条件"),
+    ("交易状态", "当日行情 suspended/status", "可用", 1, "只使用同一交易日行情记录，不向历史回填"),
+]
+
+CODE6_RE = re.compile(r"(\d{6})")
+EXCHANGE_RE = re.compile(r"\.([A-Z]+)$")
 
 
-def normalized_market_code(series: pd.Series) -> pd.Series:
+def normalize_code(series: pd.Series) -> pd.Series:
     return series.astype("string").str.strip().str.upper()
 
 
-def shanghai_b_share_mask(series: pd.Series) -> pd.Series:
-    code = normalized_market_code(series)
-    return code.str.startswith("900", na=False) & code.str.endswith(".BJ", na=False)
+def b_share_type(series: pd.Series) -> pd.Series:
+    """逐行判断 B 股类别，非 B 股返回 NA。"""
+    code = normalize_code(series)
+    kind = pd.Series(pd.NA, index=code.index, dtype="string")
+    for name, prefixes, suffix in B_SHARE_RULES:
+        hit = code.str.startswith(prefixes, na=False) & code.str.endswith(suffix, na=False)
+        kind = kind.mask(hit, name)
+    return kind
 
 
-def shenzhen_b_share_mask(series: pd.Series) -> pd.Series:
-    code = normalized_market_code(series)
-    return (
-        code.str.startswith(("200", "201"), na=False)
-        & code.str.endswith(".SZ", na=False)
-    )
+source = pq.ParquetFile(SOURCE)
 
-
-def b_share_mask(series: pd.Series) -> pd.Series:
-    return shanghai_b_share_mask(series) | shenzhen_b_share_mask(series)
-
-pf = pq.ParquetFile(source)
-first_seen_by_market_code = {}
-data_start = None
-source_rows = 0
-kept_rows = 0
-excluded_rows = 0
-b_share_codes = set()
+# ---- 第一遍：北交所切换日行情、每只证券的首现日、B 股清单 ----
+first_seen_by_code = {}
+b_share_codes = {}
 transition_rows = []
+source_rows = excluded_rows = kept_rows = 0
+data_start = None
 
-mapping_scan_columns = [
-    "date",
-    "stock_code",
-    "close",
-    "pre_close",
-    "close_adj",
-    "pre_close_adj",
-    "share_total",
-]
-for batch in pf.iter_batches(columns=mapping_scan_columns, batch_size=25_000):
+for batch in source.iter_batches(columns=MAPPING_COLUMNS, batch_size=BATCH):
     chunk = batch.to_pandas()
     source_rows += len(chunk)
     chunk["date"] = pd.to_datetime(chunk["date"])
-    chunk["market_code"] = normalized_market_code(chunk["stock_code"])
-    transition = chunk.loc[chunk["date"].isin([OLD_LAST_DATE, NEW_FIRST_DATE])].copy()
-    if not transition.empty:
-        transition_rows.append(transition)
-    is_b_share = b_share_mask(chunk["stock_code"])
-    b_share_codes.update(
-        normalized_market_code(chunk.loc[is_b_share, "stock_code"])
-        .dropna()
-        .unique()
-        .tolist()
-    )
-    excluded_rows += int(is_b_share.sum())
-    chunk = chunk.loc[~is_b_share].copy()
-    if chunk.empty:
-        continue
-    code6 = chunk["stock_code"].astype("string").str.extract(r"(\d{6})", expand=False)
-    if code6.isna().any():
-        raise ValueError("行情表存在无法解析的股票代码")
-    kept_rows += len(chunk)
-    batch_min = chunk["date"].min()
-    data_start = batch_min if data_start is None else min(data_start, batch_min)
-    mins = chunk.groupby("market_code", sort=False)["date"].min()
-    for code, dt in mins.items():
-        old = first_seen_by_market_code.get(code)
-        if old is None or dt < old:
-            first_seen_by_market_code[code] = dt
+    chunk["market_code"] = normalize_code(chunk["stock_code"])
+    transition_rows.append(chunk.loc[chunk["date"].isin([OLD_LAST_DATE, NEW_FIRST_DATE])])
 
-if not transition_rows:
+    kind = b_share_type(chunk["stock_code"])
+    is_b_share = kind.notna()
+    excluded_rows += int(is_b_share.sum())
+    b_share_codes.update(zip(chunk.loc[is_b_share, "market_code"], kind[is_b_share]))
+
+    kept = chunk.loc[~is_b_share]
+    if kept.empty:
+        continue
+    if kept["market_code"].str.extract(CODE6_RE, expand=False).isna().any():
+        raise ValueError("行情表存在无法解析的股票代码")
+    kept_rows += len(kept)
+    batch_min = kept["date"].min()
+    data_start = batch_min if data_start is None else min(data_start, batch_min)
+    for code, date in kept.groupby("market_code", sort=False)["date"].min().items():
+        if code not in first_seen_by_code or date < first_seen_by_code[code]:
+            first_seen_by_code[code] = date
+
+transition = pd.concat(transition_rows, ignore_index=True)
+if transition.empty:
     raise ValueError("行情表缺少北交所代码切换日期，无法生成新旧代码映射")
-bse_mapping = derive_bse_code_mapping(pd.concat(transition_rows, ignore_index=True))
+bse_mapping = derive_bse_code_mapping(transition)
 bse_mapping.to_parquet(OUT_DIR / "bse_code_mapping.parquet", index=False)
 bse_mapping.to_csv(OUT_DIR / "bse_code_mapping.csv", index=False, encoding="utf-8-sig")
-old_to_new_market_code = dict(zip(bse_mapping["old_code"], bse_mapping["new_code"]))
-new_to_old_financial_code6 = dict(
-    zip(
-        bse_mapping["new_code"],
-        bse_mapping["old_code"].str.extract(r"(\d{6})", expand=False),
-    )
+old_to_new = dict(zip(bse_mapping["old_code"], bse_mapping["new_code"]))
+new_to_old_code6 = dict(
+    zip(bse_mapping["new_code"], bse_mapping["old_code"].str.extract(CODE6_RE, expand=False))
 )
-first_seen = {}
-for market_code, dt in first_seen_by_market_code.items():
-    security_id = old_to_new_market_code.get(market_code, market_code)
-    old = first_seen.get(security_id)
-    if old is None or dt < old:
-        first_seen[security_id] = dt
 
-shanghai_b_share_codes = {code for code in b_share_codes if code.startswith("900")}
-shenzhen_b_share_codes = {
-    code for code in b_share_codes if code.startswith(("200", "201"))
-}
-if len(shanghai_b_share_codes) != expected_shanghai_b_share_count:
-    raise ValueError(
-        f"行情表识别出的 900xxx.BJ 沪市 B 股数量为 {len(shanghai_b_share_codes)}，"
-        f"预期为 {expected_shanghai_b_share_count}"
-    )
-if len(shenzhen_b_share_codes) != expected_shenzhen_b_share_count:
-    raise ValueError(
-        f"行情表识别出的 200/201xxx.SZ 深市 B 股数量为 {len(shenzhen_b_share_codes)}，"
-        f"预期为 {expected_shenzhen_b_share_count}"
-    )
+b_share_counts = pd.Series(list(b_share_codes.values())).value_counts().to_dict()
+for name, expected in EXPECTED_B_SHARE_COUNTS.items():
+    actual = b_share_counts.get(name, 0)
+    if actual != expected:
+        raise ValueError(f"行情表识别出的{name}数量为 {actual}，预期为 {expected}")
 
 b_share_audit = pd.DataFrame({"stock_code": sorted(b_share_codes)})
-b_share_audit["code6"] = b_share_audit["stock_code"].str.extract(
-    r"(\d{6})", expand=False
-)
-b_share_audit["b_share_type"] = "深圳 B 股"
-b_share_audit.loc[
-    b_share_audit["stock_code"].str.startswith("900"), "b_share_type"
-] = "上海 B 股"
+b_share_audit["code6"] = b_share_audit["stock_code"].str.extract(CODE6_RE, expand=False)
+b_share_audit["b_share_type"] = b_share_audit["stock_code"].map(b_share_codes)
 b_share_audit.to_parquet(OUT_DIR / "b_share_codes.parquet", index=False)
 
+# 旧代码归并到新代码后，同一只证券取更早的首现日
+first_seen = {}
+for code, date in first_seen_by_code.items():
+    security_id = old_to_new.get(code, code)
+    if security_id not in first_seen or date < first_seen[security_id]:
+        first_seen[security_id] = date
+
+# ---- 第二遍：清洗、打标记、写面板 ----
 writer = None
-suspended_rows = 0
-cixin_rows = 0
+suspended_rows = cixin_rows = market_rows = 0
 cixin_codes = set()
-market_rows = 0
 
 try:
-    for batch in pf.iter_batches(columns=columns, batch_size=25_000):
+    for batch in source.iter_batches(columns=SCAN_COLUMNS, batch_size=BATCH):
         mkt = batch.to_pandas()
-        is_b_share = b_share_mask(mkt["stock_code"])
-        mkt = mkt.loc[~is_b_share].copy()
+        mkt = mkt.loc[b_share_type(mkt["stock_code"]).isna()].copy()
         if mkt.empty:
             continue
         market_rows += len(mkt)
         mkt["date"] = pd.to_datetime(mkt["date"])
-        mkt["market_code"] = normalized_market_code(mkt["stock_code"])
-        mkt["code6"] = mkt["market_code"].str.extract(r"(\d{6})", expand=False)
+        mkt["market_code"] = normalize_code(mkt["stock_code"])
+        mkt["code6"] = mkt["market_code"].str.extract(CODE6_RE, expand=False)
         if mkt["code6"].isna().any():
             raise ValueError("行情表存在无法解析的股票代码")
-        mkt["exchange"] = mkt["market_code"].str.extract(r"\.([A-Z]+)$", expand=False)
-        if not mkt["exchange"].isin(["SH", "SZ", "BJ"]).all():
-            unknown = sorted(mkt.loc[~mkt["exchange"].isin(["SH", "SZ", "BJ"]), "market_code"].unique())
-            raise ValueError(f"行情表存在未识别的交易所代码: {unknown[:10]}")
-        mkt["market_scope"] = mkt["exchange"].map(
-            {"SH": "沪市 A 股", "SZ": "深市 A 股", "BJ": "北交所"}
-        )
-        mkt["security_id"] = (
-            mkt["market_code"].map(old_to_new_market_code).fillna(mkt["market_code"])
-        )
-        mkt["financial_code6"] = (
-            mkt["market_code"].map(new_to_old_financial_code6).fillna(mkt["code6"])
-        )
-        mkt["bse_code_mapped"] = mkt["market_code"].isin(new_to_old_financial_code6).astype("int8")
 
-        keys = pd.MultiIndex.from_frame(mkt[["date", "code6"]])
-        if keys.duplicated().any():
+        mkt["exchange"] = mkt["market_code"].str.extract(EXCHANGE_RE, expand=False)
+        unknown = mkt.loc[~mkt["exchange"].isin(MARKET_SCOPES), "market_code"].unique()
+        if len(unknown):
+            raise ValueError(f"行情表存在未识别的交易所代码: {sorted(unknown)[:10]}")
+        mkt["market_scope"] = mkt["exchange"].map(MARKET_SCOPES)
+
+        mkt["security_id"] = mkt["market_code"].map(old_to_new).fillna(mkt["market_code"])
+        mkt["financial_code6"] = mkt["market_code"].map(new_to_old_code6).fillna(mkt["code6"])
+        mkt["bse_code_mapped"] = mkt["market_code"].isin(new_to_old_code6).astype("int8")
+
+        if pd.MultiIndex.from_frame(mkt[["date", "code6"]]).duplicated().any():
             raise ValueError("行情表存在重复的 date + code6 记录")
 
         mkt["first_seen_date"] = mkt["security_id"].map(first_seen)
         mkt["listing_date_known"] = mkt["first_seen_date"] > data_start
-        mkt["listing_days_observed"] = (mkt["date"] - mkt["first_seen_date"]).dt.days
-        mkt["is_cixin"] = (
-            mkt["listing_date_known"] & (mkt["listing_days_observed"] < 365)
-        ).astype("int8")
+        listing_days = (mkt["date"] - mkt["first_seen_date"]).dt.days
+        mkt["is_cixin"] = (mkt["listing_date_known"] & (listing_days < 365)).astype("int8")
 
-        suspended_value = pd.to_numeric(mkt["suspended"], errors="coerce")
-        suspended_unknown = suspended_value.isna() & mkt["status"].isna()
+        raw_suspended = pd.to_numeric(mkt["suspended"], errors="coerce")
         status = mkt["status"].astype("string").str.strip()
+        mkt["suspended_unknown"] = (raw_suspended.isna() & mkt["status"].isna()).astype("int8")
         mkt["suspended"] = (
-            suspended_value.eq(1).fillna(False)
-            | status.eq("停牌").fillna(False)
+            raw_suspended.eq(1).fillna(False) | status.eq("停牌").fillna(False)
         ).astype("int8")
-        mkt["suspended_unknown"] = suspended_unknown.astype("int8")
 
-        out = mkt[
-            [
-                "date",
-                "code6",
-                "market_code",
-                "security_id",
-                "financial_code6",
-                "bse_code_mapped",
-                "exchange",
-                "market_scope",
-                "me_total",
-                "status",
-                "suspended",
-                "suspended_unknown",
-                "is_cixin",
-                "listing_date_known",
-                "first_seen_date",
-            ]
-        ].copy()
-
+        out = mkt[OUT_COLUMNS]
         suspended_rows += int(out["suspended"].sum())
         cixin_rows += int(out["is_cixin"].sum())
-        cixin_codes.update(out.loc[out["is_cixin"].eq(1), "security_id"].dropna().tolist())
+        cixin_codes.update(out.loc[out["is_cixin"].eq(1), "security_id"].dropna())
 
         table = pa.Table.from_pandas(out, preserve_index=False)
         if writer is None:
-            writer = pq.ParquetWriter(out_path, table.schema)
+            writer = pq.ParquetWriter(OUT_PATH, table.schema)
         writer.write_table(table)
 finally:
     if writer is not None:
@@ -230,47 +195,27 @@ if market_rows != kept_rows:
     )
 
 field_audit = pd.DataFrame(
-    [
-        {
-            "field": "ST/PT",
-            "source": "未提供历史字段",
-            "availability": "不可用",
-            "filter_applied": 0,
-            "point_in_time_rule": "不使用当前名称反推历史状态",
-        },
-        {
-            "field": "上市日期",
-            "source": "行情首次出现日 first_seen_date",
-            "availability": "部分可用",
-            "filter_applied": 0,
-            "point_in_time_rule": "仅记录代理日期，不作为筛选条件",
-        },
-        {
-            "field": "交易状态",
-            "source": "当日行情 suspended/status",
-            "availability": "可用",
-            "filter_applied": 1,
-            "point_in_time_rule": "只使用同一交易日行情记录，不向历史回填",
-        },
-    ]
+    FIELD_AUDIT,
+    columns=["field", "source", "availability", "filter_applied", "point_in_time_rule"],
 )
 field_audit.to_csv(OUT_DIR / "point_in_time_field_audit.csv", index=False, encoding="utf-8-sig")
 field_audit.to_parquet(OUT_DIR / "point_in_time_field_audit.parquet", index=False)
 
-print(f"source rows: {source_rows:,}")
-print(f"B-share rows excluded: {excluded_rows:,}")
-print(f"Shanghai B-share stocks excluded: {len(shanghai_b_share_codes):,}")
-print(f"Shenzhen B-share stocks excluded: {len(shenzhen_b_share_codes):,}")
-print(f"B-share stocks excluded in total: {len(b_share_codes):,}")
-print(f"BSE old/new code mappings: {len(bse_mapping):,}")
-print(f"market rows kept: {kept_rows:,}")
-print(f"data start: {data_start.date()}")
-print(f"suspended rows (marked): {suspended_rows:,}")
-print(f"new-listing rows (recorded only): {cixin_rows:,}")
-print(f"new-listing stocks: {len(cixin_codes):,}")
-print("ST/PT filter: not applied")
-print("active NaN mask: suspended dates only (TTM/market-cap missingness remains natural NaN)")
-print(f"saved: {out_path}")
-print(f"saved: {OUT_DIR / 'b_share_codes.parquet'}")
-print(f"saved: {OUT_DIR / 'bse_code_mapping.parquet'}")
-print(f"saved: {OUT_DIR / 'point_in_time_field_audit.csv'}")
+for line in [
+    f"source rows: {source_rows:,}",
+    f"B-share rows excluded: {excluded_rows:,}",
+    f"B-share stocks excluded: {len(b_share_audit):,} {b_share_counts}",
+    f"BSE old/new code mappings: {len(bse_mapping):,}",
+    f"market rows kept: {kept_rows:,}",
+    f"data start: {data_start.date()}",
+    f"suspended rows (marked): {suspended_rows:,}",
+    f"new-listing rows (recorded only): {cixin_rows:,}",
+    f"new-listing stocks: {len(cixin_codes):,}",
+    "ST/PT filter: not applied",
+    "active NaN mask: suspended dates only (TTM/market-cap missingness remains natural NaN)",
+    f"saved: {OUT_PATH}",
+    f"saved: {OUT_DIR / 'b_share_codes.parquet'}",
+    f"saved: {OUT_DIR / 'bse_code_mapping.parquet'}",
+    f"saved: {OUT_DIR / 'point_in_time_field_audit.csv'}",
+]:
+    print(line)
