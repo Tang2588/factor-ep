@@ -35,3 +35,6 @@ config/paths.local.toml
 # Operating-system files
 Thumbs.db
 .DS_Store
+# Editor settings (machine-local)
+.vscode/
+*/.vscode/
