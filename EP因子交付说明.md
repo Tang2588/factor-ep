@@ -144,17 +144,16 @@ Step 1 在行情表的原始 `stock_code` 上分别识别两类 B 股：
 行情代码，同时以 `security_id` 统一跨期证券身份，并以 `financial_code6` 将新代码行情
 连接到旧代码财报历史。
 
-### 3.2 ST、次新和停牌
+### 3.2 ST 和停牌
 
 - 不执行 ST/PT 股票筛选。行情表没有历史 ST 字段，`_mask.parquet` 和
   `factor_audit.parquet` 中以 `st_data_available = 0`、`st_filter_applied = 0` 留痕。
-- 次新股只保留 `is_cixin` 标记用于审计，不用它把 EP 或 PE 置为 NaN。
 - 只有行情表明确标记为停牌的日期会主动把 EP 和 PE 置为 NaN：
   `suspended == 1` 或 `status == '停牌'`。
-- TTM 缺失、总市值缺失或非正等情况仍然会使 EP 自然为 NaN；这不是 ST 或次新筛选。
+- TTM 缺失、总市值缺失或非正等情况仍然会使 EP 自然为 NaN；这不是 ST 筛选。
 
 `_mkt_clean.parquet` 仍保留原始行情代码、统一证券身份、财务连接代码、交易所、市场类别、`status`、`suspended`、
-`suspended_unknown`、`is_cixin`、`listing_date_known` 和 `first_seen_date`，便于下游复核。清洗后检查
+`suspended_unknown`，便于下游复核。清洗后检查
 `(date, code6)` 不重复。
 
 ## 4. 计算流程
@@ -166,8 +165,7 @@ Step 1 在行情表的原始 `stock_code` 上分别识别两类 B 股：
 3. 其余股票统一提取为六位 `code6`，检查日期和股票代码组合唯一。
 4. 保留当日行情代码，并生成统一的 `security_id` 和用于连接财报的 `financial_code6`。
 5. 根据同一交易日的 `suspended` 和 `status` 形成停牌标记。
-6. 按统一证券身份计算 `first_seen_date` 和 `is_cixin`，代码切换不再被误记为新上市；该日期仍不是官方上市日期。
-7. 输出 `point_in_time_field_audit.*`，记录 ST、上市日期和交易状态字段的可用性。
+6. 输出 `point_in_time_field_audit.*`，记录 ST 和交易状态字段的可用性。
 
 ### Step 2：利润表处理
 
@@ -260,7 +258,7 @@ Step 5 同时生成逐日覆盖率。正式测试起点采用固定规则：非�
 | `pe_raw.parquet` | 原始 PE，`signal` 列 |
 | `ep_mad.parquet` / `pe_mad.parquet` | MAD 处理后的 EP / PE |
 | `ep.parquet` / `pe.parquet` | Z 标准化后的 EP / PE |
-| `_mask.parquet` | 停牌、次新、ST/上市日期可用性及未筛选留痕 |
+| `_mask.parquet` | 停牌、ST 可用性及未筛选留痕 |
 | `b_share_codes.parquet` | 被排除的 89 只沪深 B 股名单及分类 |
 | `bse_code_mapping.parquet/.csv` | 242 对北交所新旧代码映射及匹配证据 |
 | `factor_audit.parquet` | 市值、所用财报、TTM、原始值、MAD 值和 Z 值的逐行追溯表 |
@@ -303,7 +301,6 @@ Step 5 同时生成逐日覆盖率。正式测试起点采用固定规则：非�
 | 2025-12-31 行情截面 | 5,470 只：沪市 2,299、深市 2,883、北交所 288 |
 | 清洗后停牌标记 | 21,985 行 |
 | 北交所新旧代码映射 | 242 对 |
-| 次新标记（仅记录） | 451,442 行 / 1,925 个统一证券身份 |
 | 原始有效 EP | 6,732,630 |
 | 原始有效 PE | 6,732,630 |
 | 负 EP / 负 PE | 1,437,888 |
@@ -368,7 +365,7 @@ python cross_section_rlm.py
 ## 9. 限制
 
 1. 当前数据没有历史 ST/PT 标记，因此不做 ST 筛选。
-2. `first_seen_date` 只能识别行情数据起点之后上市的股票，不能替代官方上市日期。
+2. 数据集不含上市日期字段。行情表是片段数据，无法准确判断一只股票上市多久，因此本交付**不做次新股标记**（早期版本曾用行情表首次出现日代理，已废弃）。
 3. 当前没有正式上市、退市及北交所转板日期表；股票池按行情表当日记录和交易所后缀构造，无法独立核验每只股票的精确上市、退市或转板边界。
 4. 北交所新旧代码映射由行情表休市前后的价格和总股本推导，已通过一一对应及价格连续性检查，但仍不是外部官方映射表。
 5. 本交付只计算因子，不包含 T+1 实际成交、涨跌停、复牌执行、滑点或交易成本模拟。

@@ -179,7 +179,6 @@ def enrich_factor_audit() -> tuple[pd.DataFrame, pd.Timestamp]:
         "test_start_rule": "first month-end that confirms the consecutive-month rule",
         "formal_test_start_date": test_start.date().isoformat(),
         "st_filter_applied": False,
-        "listing_filter_applied": False,
     }
     with (DATA / "factor_test_start.json").open("w", encoding="utf-8") as file:
         json.dump(config, file, ensure_ascii=False, indent=2)

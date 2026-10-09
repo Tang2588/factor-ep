@@ -61,17 +61,12 @@ def make_batch(merged: pd.DataFrame):
             "code6",
             "suspended",
             "suspended_unknown",
-            "is_cixin",
-            "listing_date_known",
-            "first_seen_date",
         ]
     ].rename(columns={"code6": "stock_code"})
     mask = mask.set_index(["date", "stock_code"])
     mask["st_data_available"] = 0
     mask["st_filter_applied"] = 0
     mask["st_filter_note"] = "ST/PT filter not applied; historical ST data unavailable"
-    mask["listing_date_is_official"] = 0
-    mask["listing_filter_applied"] = 0
     mask["trading_status_point_in_time"] = 1
 
     audit_columns = [
@@ -87,9 +82,6 @@ def make_batch(merged: pd.DataFrame):
         "status",
         "suspended",
         "suspended_unknown",
-        "is_cixin",
-        "listing_date_known",
-        "first_seen_date",
         "signal_cutoff",
         "VERSION_TIME",
         *TTM_TRACE_COLUMNS,
@@ -108,8 +100,6 @@ def make_batch(merged: pd.DataFrame):
     audit["st_flag"] = pd.Series(pd.NA, index=audit.index, dtype="Int8")
     audit["st_data_available"] = 0
     audit["st_filter_applied"] = 0
-    audit["listing_date_is_official"] = 0
-    audit["listing_filter_applied"] = 0
     audit["trading_status_point_in_time"] = 1
     audit = audit.set_index(["date", "stock_code"])
     valid = raw["signal"].notna()

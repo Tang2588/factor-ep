@@ -186,7 +186,7 @@ def stream_size_raw(mkt_path: Path, raw_path: Path, mask_path: Path, batch_size:
 
             raw = pd.DataFrame({"date": mkt["date"], "stock_code": mkt["code6"], "signal": signal})
             raw = raw.set_index(["date", "stock_code"])
-            mask = mkt[["date", "code6", "me_total", "suspended", "suspended_unknown", "is_cixin"]].rename(columns={"code6": "stock_code"})
+            mask = mkt[["date", "code6", "me_total", "suspended", "suspended_unknown"]].rename(columns={"code6": "stock_code"})
             mask = mask.set_index(["date", "stock_code"])
             mask["st_filter_applied"] = 0
             mask["st_filter_note"] = "historical ST/PT data unavailable"

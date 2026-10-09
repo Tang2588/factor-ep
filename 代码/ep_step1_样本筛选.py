@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Step 1：构建沪深 A 股 + 北交所的行情面板。
 
-不施加 ST/PT 与次新股约束；剔除沪市 B 股（900xxx.BJ）与深市 B 股
+不施加 ST/PT 约束；剔除沪市 B 股（900xxx.BJ）与深市 B 股
 （200/201xxx.SZ）。当日交易状态与上市日期可用性保留在面板中供审计。
 
 北交所 2025 年换代码，同一只证券在切换前后必须共享一个身份，而财报又要按
@@ -37,8 +37,7 @@ SCAN_COLUMNS = ["date", "stock_code", "me_total", "suspended", "status"]
 OUT_COLUMNS = [
     "date", "code6", "market_code", "security_id", "financial_code6",
     "bse_code_mapped", "exchange", "market_scope", "me_total", "status",
-    "suspended", "suspended_unknown", "is_cixin", "listing_date_known",
-    "first_seen_date",
+    "suspended", "suspended_unknown",
 ]
 
 # B 股识别规则与预期数量：数量不符即中断，避免口径悄悄漂移
@@ -49,7 +48,6 @@ MARKET_SCOPES = {"SH": "沪市 A 股", "SZ": "深市 A 股", "BJ": "北交所"}
 # 时点字段可用性审计：字段是否可用、是否被用作筛选条件
 FIELD_AUDIT = [
     ("ST/PT", "未提供历史字段", "不可用", 0, "不使用当前名称反推历史状态"),
-    ("上市日期", "行情首次出现日 first_seen_date", "部分可用", 0, "仅记录代理日期，不作为筛选条件"),
     ("交易状态", "当日行情 suspended/status", "可用", 1, "只使用同一交易日行情记录，不向历史回填"),
 ]
 
@@ -73,8 +71,7 @@ def b_share_type(series: pd.Series) -> pd.Series:
 
 source = pq.ParquetFile(SOURCE)
 
-# ---- 第一遍：北交所切换日行情、每只证券的首现日、B 股清单 ----
-first_seen_by_code = {}
+# ---- 第一遍：北交所切换日行情、B 股清单 ----
 b_share_codes = {}
 transition_rows = []
 source_rows = excluded_rows = kept_rows = 0
@@ -100,9 +97,6 @@ for batch in source.iter_batches(columns=MAPPING_COLUMNS, batch_size=BATCH):
     kept_rows += len(kept)
     batch_min = kept["date"].min()
     data_start = batch_min if data_start is None else min(data_start, batch_min)
-    for code, date in kept.groupby("market_code", sort=False)["date"].min().items():
-        if code not in first_seen_by_code or date < first_seen_by_code[code]:
-            first_seen_by_code[code] = date
 
 transition = pd.concat(transition_rows, ignore_index=True)
 if transition.empty:
@@ -126,17 +120,9 @@ b_share_audit["code6"] = b_share_audit["stock_code"].str.extract(CODE6_RE, expan
 b_share_audit["b_share_type"] = b_share_audit["stock_code"].map(b_share_codes)
 b_share_audit.to_parquet(OUT_DIR / "b_share_codes.parquet", index=False)
 
-# 旧代码归并到新代码后，同一只证券取更早的首现日
-first_seen = {}
-for code, date in first_seen_by_code.items():
-    security_id = old_to_new.get(code, code)
-    if security_id not in first_seen or date < first_seen[security_id]:
-        first_seen[security_id] = date
-
 # ---- 第二遍：清洗、打标记、写面板 ----
 writer = None
-suspended_rows = cixin_rows = market_rows = 0
-cixin_codes = set()
+suspended_rows = market_rows = 0
 
 try:
     for batch in source.iter_batches(columns=SCAN_COLUMNS, batch_size=BATCH):
@@ -164,11 +150,6 @@ try:
         if pd.MultiIndex.from_frame(mkt[["date", "code6"]]).duplicated().any():
             raise ValueError("行情表存在重复的 date + code6 记录")
 
-        mkt["first_seen_date"] = mkt["security_id"].map(first_seen)
-        mkt["listing_date_known"] = mkt["first_seen_date"] > data_start
-        listing_days = (mkt["date"] - mkt["first_seen_date"]).dt.days
-        mkt["is_cixin"] = (mkt["listing_date_known"] & (listing_days < 365)).astype("int8")
-
         raw_suspended = pd.to_numeric(mkt["suspended"], errors="coerce")
         status = mkt["status"].astype("string").str.strip()
         mkt["suspended_unknown"] = (raw_suspended.isna() & mkt["status"].isna()).astype("int8")
@@ -178,8 +159,6 @@ try:
 
         out = mkt[OUT_COLUMNS]
         suspended_rows += int(out["suspended"].sum())
-        cixin_rows += int(out["is_cixin"].sum())
-        cixin_codes.update(out.loc[out["is_cixin"].eq(1), "security_id"].dropna())
 
         table = pa.Table.from_pandas(out, preserve_index=False)
         if writer is None:
@@ -209,8 +188,6 @@ for line in [
     f"market rows kept: {kept_rows:,}",
     f"data start: {data_start.date()}",
     f"suspended rows (marked): {suspended_rows:,}",
-    f"new-listing rows (recorded only): {cixin_rows:,}",
-    f"new-listing stocks: {len(cixin_codes):,}",
     "ST/PT filter: not applied",
     "active NaN mask: suspended dates only (TTM/market-cap missingness remains natural NaN)",
     f"saved: {OUT_PATH}",
