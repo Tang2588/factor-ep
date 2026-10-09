@@ -216,6 +216,13 @@ def standardize_factor(
     final_path: Path | None = None,
     batch_size: int = 50_000,
 ) -> dict[str, int]:
+    """逐日 MAD 去极值 + Z 标准化（流式分块，低内存）。
+
+    重要：raw_path 必须按 ``date 升序 -> stock_code 升序`` 物理存储。
+    本函数用 ``chunk["date"].iloc[-1]`` 判断「哪一天已经读全」，
+    若输入未按日期排序，同一天的横截面会被拆成多段，
+    导致标准化结果错误且运行极慢。写入前请先 ``raw.sort_index()``。
+    """
     pf = pq.ParquetFile(raw_path)
     mad_writer = None
     z_writer = None
