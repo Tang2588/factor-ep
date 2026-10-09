@@ -81,7 +81,6 @@ columns = ['signal']
 | 因子计算 | `代码/ep_step4` | 点时间对齐、原始 EP/PE |
 | 标准化 | `代码/ep_step5` | 逐日横截面 MAD 去极值与 Z 标准化 |
 | 流式计算 | `代码/pure_factor_streaming.py` | 分块读写、点时间对齐、MAD+Z 的底层实现 |
-| 文档转换 | `代码/md_to_latex.py` | Markdown → LaTeX |
 
 ## 六、目录说明
 
