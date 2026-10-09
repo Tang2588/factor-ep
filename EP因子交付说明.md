@@ -7,11 +7,11 @@
 ```text
 EP因子_交付版
 ├─ 代码
-│  ├─ step1_样本筛选.py
-│  ├─ step2_利润表处理.py
-│  ├─ step3_TTM计算.py
-│  ├─ step4_点时间对齐_计算PE.py
-│  ├─ step5_MAD去极值_Z标准化.py
+│  ├─ ep_step1_样本筛选.py
+│  ├─ ep_step2_利润表处理.py
+│  ├─ ep_step3_TTM计算.py
+│  ├─ ep_step4_点时间对齐_计算PE.py
+│  ├─ ep_step5_MAD去极值_Z标准化.py
 │  ├─ pure_factor_streaming.py
 │  ├─ bse_code_mapping.py
 │  ├─ plot_ep_pe分布.py
@@ -346,11 +346,11 @@ EP 平均系数方向符合预期，但全期尚未达到 5% 显著性标准。�
 在项目 Python 环境中执行：
 
 ```powershell
-python step1_样本筛选.py
-python step2_利润表处理.py
-python step3_TTM计算.py
-python step4_点时间对齐_计算PE.py
-python step5_MAD去极值_Z标准化.py
+python ep_step1_样本筛选.py
+python ep_step2_利润表处理.py
+python ep_step3_TTM计算.py
+python ep_step4_点时间对齐_计算PE.py
+python ep_step5_MAD去极值_Z标准化.py
 python factor_verify.py
 python EP因子交付验证.py
 python cross_section_rlm.py

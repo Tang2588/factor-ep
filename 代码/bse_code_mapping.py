@@ -2,7 +2,7 @@
 """兼容层：北交所新旧代码映射。
 
 2026-09-21 起映射算法统一实现在 ``common.market.derive_bse_mapping``，
-本文件只保留 ``step1_样本筛选.py`` 使用的旧入口，避免同一套逻辑存在两份实现。
+本文件只保留 ``ep_step1_样本筛选.py`` 使用的旧入口，避免同一套逻辑存在两份实现。
 新代码请直接调用 ``common.market.derive_bse_mapping``。
 """
 from __future__ import annotations

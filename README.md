@@ -18,11 +18,11 @@ pip install -r requirements.txt
 Copy-Item config\paths.toml config\paths.local.toml
 
 # 因子计算流水线
-python "代码\step1_样本筛选.py"
-python "代码\step2_利润表处理.py"
-python "代码\step3_TTM计算.py"
-python "代码\step4_点时间对齐_计算PE.py"
-python "代码\step5_MAD去极值_Z标准化.py"
+python "代码\ep_step1_样本筛选.py"
+python "代码\ep_step2_利润表处理.py"
+python "代码\ep_step3_TTM计算.py"
+python "代码\ep_step4_点时间对齐_计算PE.py"
+python "代码\ep_step5_MAD去极值_Z标准化.py"
 
 # 横截面回归：读取因子数据并输出回归统计结果（实测约 23 秒）
 python "代码\cross_section_rlm.py"                       # 默认因子 ep
@@ -47,7 +47,7 @@ python "代码\factor_verify.py"
 |---|---|---|
 | 共享底层 | `代码/common/` | 分片读取 parquet、行情快照清洗、B 股剔除、北交所新旧代码映射、月度日历、前瞻收益、回归面板 |
 | 数据清洗 | `代码/step1`–`step4` | 样本筛选、利润表点时间版本、TTM 归母净利润、点时间对齐与原始 EP/PE |
-| 因子计算 | `代码/step5_MAD去极值_Z标准化.py` | 逐日横截面 MAD 去极值与 Z 标准化 |
+| 因子计算 | `代码/ep_step5_MAD去极值_Z标准化.py` | 逐日横截面 MAD 去极值与 Z 标准化 |
 | 回归分析 | `代码/cross_section_rlm.py`、`代码/cross_section_ols.py` | 通用月度横截面 Huber RLM 与同口径 OLS，读取任意因子文件 |
 | IC 检验 | `代码/rank_ic.py` | 通用月度 Rank IC：行业与市值中性化后计算 IC / IR，读取任意因子文件 |
 | 分层回测 | `代码/layered_backtest.py` | 通用行业内分层回测：中性化残差行业内分五组，输出组合绩效、净值与换手率图 |
