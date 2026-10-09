@@ -1,20 +1,17 @@
 # -*- coding: utf-8 -*-
-"""EP/PE 因子项目的共享底层模块。
+"""EP 因子项目的共享底层模块。
 
-本包只提供可复用的数据准备函数，不执行任何业务阶段逻辑，也不写出结果文件。
-各阶段脚本（数据清洗、因子计算、回归分析）统一从这里取数，避免同一套口径
-在多个脚本里各写一份。
+本包只提供因子计算链用到的数据准备函数，不执行业务阶段逻辑，也不写出结果文件。
 
-- ``paths``      项目路径与共享常量
 - ``parquet_io`` 分片读取 parquet 面板
 - ``market``     行情快照清洗、B 股剔除、北交所新旧代码映射
-- ``calendar``   月度形成／建仓／退出日历
-- ``returns``    前瞻收益
-- ``panel``      形成日面板、行业面板与回归面板
+
+原来还有 ``calendar``、``returns``、``panel``、``paths`` 四个模块，它们只服务于
+已经移出本仓库的测试脚本（横截面回归、Rank IC、分层回测）。那些功能现在归
+factor-toolkit（因子测试工具箱），因此一并删除；本仓库只保留因子计算需要的部分。
 """
 from __future__ import annotations
 
-from .calendar import build_monthly_calendar
 from .market import (
     apply_security_id,
     b_share_mask,
@@ -23,61 +20,22 @@ from .market import (
     normalize_market_code,
     prepare_market_snapshot,
 )
-from .panel import (
-    add_neutralized_residual,
-    build_regression_panel,
-    prepare_formation_panel,
-    prepare_industry,
-)
 from .parquet_io import (
     MarketIndex,
     read_all_dates,
     read_selected_dates,
     scan_market_index,
 )
-from .paths import (
-    FACTOR_DIR,
-    HUBER_T,
-    INDUSTRY_PATH,
-    MARKET_PATH,
-    MAX_ITER,
-    MID_DIR,
-    MIN_OBSERVATIONS,
-    PROJECT_ROOT,
-    REG_DIR,
-    TEST_START_PATH,
-    TOL,
-    resolve_factor_path,
-)
-from .returns import build_endpoint_forward_returns
 
 __all__ = [
-    "FACTOR_DIR",
-    "HUBER_T",
-    "INDUSTRY_PATH",
-    "MARKET_PATH",
-    "MAX_ITER",
-    "MID_DIR",
-    "MIN_OBSERVATIONS",
-    "PROJECT_ROOT",
-    "REG_DIR",
-    "TEST_START_PATH",
-    "TOL",
     "MarketIndex",
-    "add_neutralized_residual",
     "apply_security_id",
     "b_share_mask",
-    "build_endpoint_forward_returns",
-    "build_monthly_calendar",
-    "build_regression_panel",
     "derive_bse_mapping",
     "extract_code6",
     "normalize_market_code",
-    "prepare_formation_panel",
-    "prepare_industry",
     "prepare_market_snapshot",
     "read_all_dates",
     "read_selected_dates",
-    "resolve_factor_path",
     "scan_market_index",
 ]
