@@ -18,7 +18,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from bse_code_mapping import NEW_FIRST_DATE, OLD_LAST_DATE, derive_bse_code_mapping
+from common.market import derive_bse_mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "中间结果"
@@ -27,6 +27,11 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 SOURCE = Path(r"D:\实习生学习项目\基础数据") / "chn_equ_mkt_quotation.parquet"
 OUT_PATH = OUT_DIR / "_mkt_clean.parquet"
 BATCH = 25_000
+
+# 北交所集中换码的日期与预期数量，直接在本步骤指定
+OLD_LAST_DATE = pd.Timestamp("2025-09-30")
+NEW_FIRST_DATE = pd.Timestamp("2025-10-09")
+EXPECTED_CONVERSIONS = 242
 
 # 第一遍只取首现日与北交所映射需要的最小列
 MAPPING_COLUMNS = [
@@ -101,7 +106,12 @@ for batch in source.iter_batches(columns=MAPPING_COLUMNS, batch_size=BATCH):
 transition = pd.concat(transition_rows, ignore_index=True)
 if transition.empty:
     raise ValueError("行情表缺少北交所代码切换日期，无法生成新旧代码映射")
-bse_mapping = derive_bse_code_mapping(transition)
+bse_mapping = derive_bse_mapping(
+    transition,
+    OLD_LAST_DATE,
+    NEW_FIRST_DATE,
+    expected_pairs=EXPECTED_CONVERSIONS,
+)
 bse_mapping.to_parquet(OUT_DIR / "bse_code_mapping.parquet", index=False)
 bse_mapping.to_csv(OUT_DIR / "bse_code_mapping.csv", index=False, encoding="utf-8-sig")
 old_to_new = dict(zip(bse_mapping["old_code"], bse_mapping["new_code"]))

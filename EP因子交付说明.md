@@ -13,7 +13,7 @@ EP因子_交付版
 │  ├─ ep_step4_点时间对齐_计算PE.py
 │  ├─ ep_step5_MAD去极值_Z标准化.py
 │  ├─ pure_factor_streaming.py
-│  ├─ bse_code_mapping.py
+│  ├─ common/market.py（北交所映射，step1 直接调用）
 │  ├─ plot_ep_pe分布.py
 │  ├─ plot_industry_pe.py
 │  ├─ cross_section_rlm.py
